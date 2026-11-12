@@ -47,6 +47,58 @@ else if (window.location.hash === '#load-opener') startSessionReceiver('opener')
 const hostController = createBrowserHost();
 hostController.install();
 
+// Allow an embedding parent page to update atomic positions without
+// reloading the CrysViz iframe.
+//
+// The actual coordinate update is delegated to BrowserHost so that the
+// existing validation, fast rendering path, and commit logic are reused.
+if (widget.present && window.parent !== window) {
+  window.addEventListener('message', async (event) => {
+    const message = event.data;
+
+    if (
+      !message
+      || typeof message !== 'object'
+      || message.type !== 'crysviz:update-fractional-positions'
+    ) {
+      return;
+    }
+
+    const requestId = message.requestId ?? null;
+
+    try {
+      const result = await hostController.facade.dispatch({
+        command: 'update_fractional_positions',
+        args: {
+          positions: message.positions,
+          commit: message.commit === true,
+        },
+      });
+
+      event.source?.postMessage(
+        {
+          type: 'crysviz:positions-updated',
+          requestId,
+          result,
+        },
+        event.origin,
+      );
+    } catch (error) {
+      event.source?.postMessage(
+        {
+          type: 'crysviz:positions-updated',
+          requestId,
+          error: {
+            code: error?.code ?? 'POSITION_UPDATE_FAILED',
+            message: String(error?.message ?? error),
+          },
+        },
+        event.origin,
+      );
+    }
+  });
+}
+
 async function start() {
   try {
     await bootstrapAuthoritative({
@@ -67,6 +119,15 @@ async function start() {
     if (widget.present) {
       const { initWidgetMode } = await import('../ui/WidgetMode.js');
       await initWidgetMode({ href: widget.href });
+    }
+    if (widget.present && window.parent !== window) {
+      window.parent.postMessage(
+        {
+          type: 'crysviz:ready',
+          protocolVersion: hostController.facade.protocolVersion,
+        },
+        '*',
+      );
     }
   } catch (error) {
     hostController.reportError(error);
